@@ -8,7 +8,7 @@ RUN set -eux \
     && apt-get update -y \
     && env GOOS=linux GOARCH=${TARGETARCH} make
 
-FROM debian:trixie-slim
+FROM ubuntu:25.04
 COPY --from=go_builder /build/bin/farcasterd /usr/local/bin/farcasterd
 RUN set -eux \
     && apt-get update -y \
