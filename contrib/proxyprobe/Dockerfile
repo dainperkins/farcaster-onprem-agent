@@ -4,7 +4,7 @@ WORKDIR /app
 COPY *.go go.mod go.sum ./
 RUN go build -o proxyprobe
 
-FROM debian:trixie-slim
+FROM ubuntu:25.04
 
 WORKDIR /app
 COPY --from=builder /app/proxyprobe .
