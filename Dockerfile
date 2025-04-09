@@ -50,7 +50,7 @@ RUN set -eux \
     && cd -
 
 
-FROM debian:trixie-slim
+FROM ubuntu:25.04
 COPY ./scripts/. /farcaster/bin/
 COPY --from=go_builder /build/farconn/farconn /usr/local/bin
 COPY --from=go_builder /build/farcaster-go/bin/farcasterd /usr/local/bin
