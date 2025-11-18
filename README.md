@@ -161,6 +161,8 @@ Notes:
   | Opt |   --check-token        | Check if the token is valid and exit 
   | Opt |   --control string     | Enable the control API on the Windows named pipe
   | Opt |   -d, --debug          | Enable debug logging
+  | Opt |   --dump string        | Directory where Farcaster writes `farcaster-control-<timestamp>.pcap`, `farcaster-tunnel-<timestamp>.pcap`, and `farcaster-scan-<timestamp>.pcap`
+  | Opt | -i, --interface string | Network interface name used for packet captures (required with `--dump`)
   | Opt |    --group string      | Group to grant access to the control API
   | Opt |   --help               | help for farcasterd
   | Opt |   --ipv6               | Enable IPv6/AAAA DNS query resolution
@@ -294,4 +296,3 @@ such as public IP addresses and complex firewall rules, are unnecessary or minim
 **Internal Firewalling**
 
 The agent may be installed in e.g. a partner DMZ or other firwalled segment to allow complete client control of the targets that can be accessed from the Agent, however, please keep in mind rules must allow connectivity for all Snyk API & Web targets, as well as any ancillary services and hosts required by those web apps and APIs.
-

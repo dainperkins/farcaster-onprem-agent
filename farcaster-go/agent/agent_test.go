@@ -16,7 +16,7 @@ func TestAgentLifecycle(t *testing.T) {
 	logger := zap.NewNop().Sugar()
 	useIPv6 := false
 	proxyUseNames := false
-	a := New(token, nil, logger, useIPv6, proxyUseNames)
+	a := New(token, nil, logger, useIPv6, proxyUseNames, nil)
 	if a.CheckToken() != nil {
 		t.Error("Valid token considered invalid")
 	}
@@ -42,7 +42,7 @@ func TestAgentLifecycle(t *testing.T) {
 	t.Logf("Closing agent a...")
 	a.Close()
 
-	b := New(token, nil, logger, useIPv6, proxyUseNames)
+	b := New(token, nil, logger, useIPv6, proxyUseNames, nil)
 	if b.CheckToken() != nil {
 		t.Error("Valid token considered invalid")
 	}

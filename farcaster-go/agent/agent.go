@@ -15,6 +15,7 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 	"probely.com/farcaster/config"
+	"probely.com/farcaster/netutils"
 	"probely.com/farcaster/wireguard"
 	"probely.com/farcaster/wireguard/netstack"
 )
@@ -78,6 +79,13 @@ func (s *state) Status() status {
 
 // Agent represents the Farcaster agent. It is responsible for managing the
 // tunnel and the gateway connections. It's not thread-safe.
+type CaptureConfig struct {
+	InterfaceIP netip.Addr
+	Control     *netutils.ControlCapture
+	TunnelDump  *netutils.PacketDumper
+	ScanDump    *netutils.PacketDumper
+}
+
 type Agent struct {
 	// Agent state.
 	State *state
@@ -105,10 +113,40 @@ type Agent struct {
 	useIPv6 bool
 	// Use hostnames in proxy requests when available.
 	proxyUseNames bool
+	// Packet capture configuration.
+	capture *CaptureConfig
+}
+
+func (a *Agent) controlCapture() *netutils.ControlCapture {
+	if a.capture == nil {
+		return nil
+	}
+	return a.capture.Control
+}
+
+func (a *Agent) scanDump() *netutils.PacketDumper {
+	if a.capture == nil {
+		return nil
+	}
+	return a.capture.ScanDump
+}
+
+func (a *Agent) tunnelDump() *netutils.PacketDumper {
+	if a.capture == nil {
+		return nil
+	}
+	return a.capture.TunnelDump
+}
+
+func (a *Agent) interfaceIP() netip.Addr {
+	if a.capture == nil {
+		return netip.Addr{}
+	}
+	return a.capture.InterfaceIP
 }
 
 // New creates a new agent.
-func New(token string, apiURLs []string, logger *zap.SugaredLogger, useIPv6 bool, proxyUseNames bool) *Agent {
+func New(token string, apiURLs []string, logger *zap.SugaredLogger, useIPv6 bool, proxyUseNames bool, capture *CaptureConfig) *Agent {
 	if logger == nil {
 		logger = zap.NewNop().Sugar()
 	}
@@ -120,6 +158,7 @@ func New(token string, apiURLs []string, logger *zap.SugaredLogger, useIPv6 bool
 		log:           logger,
 		useIPv6:       useIPv6,
 		proxyUseNames: proxyUseNames,
+		capture:       capture,
 	}
 }
 
@@ -135,7 +174,7 @@ func (a *Agent) loadConfig(mustResolve bool) error {
 	}
 
 	// Fetch the encrypted agent configuration using Probely's API.
-	a.cfg = config.NewFarcasterConfig(string(t), a.apiURLs, a.log)
+	a.cfg = config.NewFarcasterConfig(string(t), a.apiURLs, a.log, a.controlCapture())
 	if err := a.cfg.Load(mustResolve); err != nil {
 		return err
 	}
@@ -145,6 +184,10 @@ func (a *Agent) loadConfig(mustResolve bool) error {
 func (a *Agent) CheckToken() error {
 	// We do not need DNS to check for token validity.
 	return a.loadConfig(false)
+}
+
+func (a *Agent) wrapBind(bind conn.Bind) conn.Bind {
+	return netutils.NewCaptureBind(bind, a.tunnelDump(), a.interfaceIP(), a.log)
 }
 
 func (a *Agent) UpTCP() error {
@@ -170,7 +213,7 @@ func (a *Agent) UpTCP() error {
 
 	peer := tunCfg.Peers[0]
 
-	bind, err := wireguard.NewTCPBind(&srcAddr, peer.OrigEndpoint, peer.Endpoint, a.log)
+	bind, err := wireguard.NewTCPBind(&srcAddr, peer.OrigEndpoint, peer.Endpoint, a.log, a.tunnelDump())
 	if err != nil {
 		return fmt.Errorf("failed to create TCP bind: %w", err)
 	}
@@ -179,7 +222,7 @@ func (a *Agent) UpTCP() error {
 }
 
 func (a *Agent) Up() error {
-	return a.up(conn.NewStdNetBind())
+	return a.up(a.wrapBind(conn.NewStdNetBind()))
 }
 
 func (a *Agent) up(bind conn.Bind) error {
@@ -237,7 +280,7 @@ func (a *Agent) up(bind conn.Bind) error {
 	// route traffic from remote peers to the local network without requiring
 	// special privileges or devices (e.g. /dev/net/tun).
 	mtu := min(gwCfg.MTU, 1340)
-	a.gw, err = netstack.NewTUN(addr, "gateway", mtu, a.log, a.useIPv6, a.proxyUseNames)
+	a.gw, err = netstack.NewTUN(addr, "gateway", mtu, a.log, a.useIPv6, a.proxyUseNames, a.scanDump())
 	if err != nil {
 		return fmt.Errorf("failed to create gateway: %w", err)
 	}

@@ -89,18 +89,20 @@ type Peer struct {
 type FarcasterConfig struct {
 	Files map[string]*WireGuardConfig
 
-	token   string
-	apiURLs []string
-	log     *zap.SugaredLogger
+	token          string
+	apiURLs        []string
+	log            *zap.SugaredLogger
+	controlCapture *netutils.ControlCapture
 }
 
 // NewFarcasterConfig returns a new Farcaster agent configuration.
-func NewFarcasterConfig(token string, apiURLs []string, logger *zap.SugaredLogger) *FarcasterConfig {
+func NewFarcasterConfig(token string, apiURLs []string, logger *zap.SugaredLogger, controlCapture *netutils.ControlCapture) *FarcasterConfig {
 	return &FarcasterConfig{
-		Files:   make(map[string]*WireGuardConfig),
-		token:   strings.TrimSpace(token),
-		apiURLs: apiURLs,
-		log:     logger,
+		Files:          make(map[string]*WireGuardConfig),
+		token:          strings.TrimSpace(token),
+		apiURLs:        apiURLs,
+		log:            logger,
+		controlCapture: controlCapture,
 	}
 }
 
@@ -321,12 +323,16 @@ func (c *FarcasterConfig) getHTTPClient(timeout time.Duration) *http.Client {
 		c.log.Warnf("Error getting TLS config: %v", err)
 		tlsConfig = &tls.Config{}
 	}
+	transport := &http.Transport{
+		TLSClientConfig: tlsConfig,
+		Proxy:           http.ProxyFromEnvironment,
+	}
+	if c.controlCapture != nil {
+		c.controlCapture.WrapTransport(transport)
+	}
 	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
-			Proxy:           http.ProxyFromEnvironment,
-		},
+		Timeout:   timeout,
+		Transport: transport,
 	}
 }
 

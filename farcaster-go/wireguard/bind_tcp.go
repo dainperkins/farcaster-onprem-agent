@@ -13,6 +13,7 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 
 	"probely.com/farcaster/dialers"
+	"probely.com/farcaster/netutils"
 )
 
 const (
@@ -67,6 +68,7 @@ type TCPBind struct {
 	localPort uint16         // Local port to use for endpoint
 	log       *zap.SugaredLogger
 	dialer    dialers.Dialer // Dialer to use for connections.
+	capture   *netutils.PacketDumper
 
 	// Synchronization and related state
 	mu      sync.Mutex // Protects conn, open, dialing
@@ -77,7 +79,7 @@ type TCPBind struct {
 }
 
 // NewTCPBind creates a new TCP bind for Wireguard
-func NewTCPBind(src *netip.AddrPort, origEndpoint, endpoint string, log *zap.SugaredLogger) (*TCPBind, error) {
+func NewTCPBind(src *netip.AddrPort, origEndpoint, endpoint string, log *zap.SugaredLogger, capture *netutils.PacketDumper) (*TCPBind, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("server address cannot be empty")
 	}
@@ -101,6 +103,7 @@ func NewTCPBind(src *netip.AddrPort, origEndpoint, endpoint string, log *zap.Sug
 		localPort: src.Port(),
 		log:       log,
 		dialer:    dialer,
+		capture:   capture,
 	}
 	// Initialize the condition variable, associating it with the main mutex
 	b.cond = sync.NewCond(&b.mu)
@@ -338,6 +341,9 @@ func (b *TCPBind) ensureConnection() (net.Conn, error) {
 			tcpConn.SetKeepAlive(true)
 			tcpConn.SetKeepAlivePeriod(keepAliveInterval)
 			tcpConn.SetNoDelay(true)
+		}
+		if b.capture != nil {
+			conn = netutils.NewRecordingConn(conn, b.capture)
 		}
 	} else {
 		b.log.Warnf("Connection attempt to %s failed: %v", b.endpoint, err)

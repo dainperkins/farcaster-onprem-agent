@@ -2,6 +2,9 @@ package farcasterd
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,6 +19,7 @@ import (
 
 	"probely.com/farcaster/agent"
 	"probely.com/farcaster/control"
+	"probely.com/farcaster/netutils"
 	"probely.com/farcaster/settings"
 	"probely.com/farcaster/system"
 )
@@ -41,6 +45,8 @@ type agentConfig struct {
 	apiURL        string
 	ipv6          bool
 	proxyUseNames bool
+	dumpDir       string
+	ifaceName     string
 }
 
 var (
@@ -106,6 +112,8 @@ func init() {
 
 	rootCmd.PersistentFlags().BoolVarP(&appCfg.ipv6, "ipv6", "", false, "Enable IPv6/AAAA DNS query resolution")
 	rootCmd.PersistentFlags().BoolVar(&appCfg.proxyUseNames, "proxy-names", defaultProxyUseNames, "Use hostnames instead of IPs in proxy CONNECT/SOCKS5 requests")
+	rootCmd.PersistentFlags().StringVar(&appCfg.dumpDir, "dump", "", "Write control, tunnel, and scan PCAP files to the provided directory")
+	rootCmd.PersistentFlags().StringVarP(&appCfg.ifaceName, "interface", "i", "", "Network interface used for packet captures (required with --dump)")
 }
 
 // Execute runs the agent.
@@ -127,7 +135,30 @@ func runAgent(cfg agentConfig) {
 		os.Exit(1)
 	}
 
+	var (
+		controlDump, tunnelDump, scanDump *netutils.PacketDumper
+		controlCapture                    *netutils.ControlCapture
+		captureCfg                        *agent.CaptureConfig
+		ifaceAddr                         netip.Addr
+	)
+
+	cleanupDumpers := func() {
+		closeDump := func(d **netutils.PacketDumper, name string) {
+			if *d == nil {
+				return
+			}
+			if err := (*d).Close(); err != nil {
+				logger.Warnf("Failed to close %s dump %s: %v", name, (*d).Path(), err)
+			}
+			*d = nil
+		}
+		closeDump(&controlDump, "control")
+		closeDump(&tunnelDump, "tunnel")
+		closeDump(&scanDump, "scan")
+	}
+
 	exit := func(code int) {
+		cleanupDumpers()
 		_ = logger.Sync()
 		os.Exit(code)
 	}
@@ -137,7 +168,7 @@ func runAgent(cfg agentConfig) {
 
 	// If the --check-token flag is set, we just check if the token is valid.
 	if cfg.checkToken {
-		a := agent.New(cfg.token, cfg.apiURLs, logger, cfg.ipv6, cfg.proxyUseNames)
+		a := agent.New(cfg.token, cfg.apiURLs, logger, cfg.ipv6, cfg.proxyUseNames, nil)
 		if err := a.CheckToken(); err != nil {
 			logger.Errorf("Token validation failed: %v", err)
 			exit(1)
@@ -161,8 +192,54 @@ func runAgent(cfg agentConfig) {
 		exit(0)
 	}
 
+	if cfg.dumpDir != "" {
+		if strings.TrimSpace(cfg.ifaceName) == "" {
+			logger.Error("--interface is required when --dump is enabled")
+			exit(1)
+		}
+		ifaceAddr, e = interfaceIPv4(cfg.ifaceName)
+		if e != nil {
+			logger.Errorf("Could not determine IPv4 address for interface %s: %v", cfg.ifaceName, e)
+			exit(1)
+		}
+
+		timestamp := time.Now().Format("20060102-150405")
+		controlPath := filepath.Join(cfg.dumpDir, fmt.Sprintf("farcaster-control-%s.pcap", timestamp))
+		tunnelPath := filepath.Join(cfg.dumpDir, fmt.Sprintf("farcaster-tunnel-%s.pcap", timestamp))
+		scanPath := filepath.Join(cfg.dumpDir, fmt.Sprintf("farcaster-scan-%s.pcap", timestamp))
+
+		controlDump, e = netutils.NewPacketDumper(controlPath)
+		if e != nil {
+			logger.Errorf("Could not create control dump: %v", e)
+			exit(1)
+		}
+		logger.Infof("Writing control traffic to %s", controlDump.Path())
+
+		tunnelDump, e = netutils.NewPacketDumper(tunnelPath)
+		if e != nil {
+			logger.Errorf("Could not create tunnel dump: %v", e)
+			exit(1)
+		}
+		logger.Infof("Writing tunnel traffic to %s", tunnelDump.Path())
+
+		scanDump, e = netutils.NewPacketDumper(scanPath)
+		if e != nil {
+			logger.Errorf("Could not create scan dump: %v", e)
+			exit(1)
+		}
+		logger.Infof("Writing scan traffic to %s", scanDump.Path())
+
+		controlCapture = netutils.NewControlCapture(controlDump, controlHosts(cfg.apiURLs))
+		captureCfg = &agent.CaptureConfig{
+			InterfaceIP: ifaceAddr,
+			Control:     controlCapture,
+			TunnelDump:  tunnelDump,
+			ScanDump:    scanDump,
+		}
+	}
+
 	startAgent := func() error {
-		a := agent.New(cfg.token, cfg.apiURLs, logger, cfg.ipv6, cfg.proxyUseNames)
+		a := agent.New(cfg.token, cfg.apiURLs, logger, cfg.ipv6, cfg.proxyUseNames, captureCfg)
 		if err := a.ConnectWait(maxConnTries); err != nil {
 			a.Close()
 			return err
@@ -234,4 +311,46 @@ func getAPIURLs(apiURL string) []string {
 		return []string{envURL}
 	}
 	return defaultAPIURLs
+}
+
+func interfaceIPv4(name string) (netip.Addr, error) {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok {
+			if ip := ipNet.IP.To4(); ip != nil {
+				if parsed, ok := netip.AddrFromSlice(ip); ok {
+					return parsed, nil
+				}
+			}
+		}
+	}
+	return netip.Addr{}, fmt.Errorf("interface %s does not have an IPv4 address", name)
+}
+
+func controlHosts(urls []string) []string {
+	seen := make(map[string]struct{})
+	var hosts []string
+	for _, raw := range urls {
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		host := strings.TrimSpace(strings.ToLower(u.Hostname()))
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		hosts = append(hosts, host)
+	}
+	return hosts
 }

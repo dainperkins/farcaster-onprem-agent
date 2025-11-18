@@ -16,6 +16,7 @@ import (
 
 	"go.uber.org/zap"
 	"golang.zx2c4.com/wireguard/tun"
+	"probely.com/farcaster/netutils"
 )
 
 // TUN implements the tun.Device interface using Netstack.
@@ -27,10 +28,11 @@ type TUN struct {
 	log    *zap.SugaredLogger
 	closed bool
 	mu     sync.Mutex
+	dumper *netutils.PacketDumper
 }
 
 // NewTUN creates a new TUN device using Netstack.
-func NewTUN(addr netip.Addr, name string, mtu int, logger *zap.SugaredLogger, ipv6 bool, proxyUseNames bool) (*TUN, error) {
+func NewTUN(addr netip.Addr, name string, mtu int, logger *zap.SugaredLogger, ipv6 bool, proxyUseNames bool, dumper *netutils.PacketDumper) (*TUN, error) {
 	ns, err := newNetstack(addr, mtu, logger, ipv6, proxyUseNames)
 	if err != nil {
 		return nil, err
@@ -42,6 +44,7 @@ func NewTUN(addr netip.Addr, name string, mtu int, logger *zap.SugaredLogger, ip
 		mtu:    mtu,
 		log:    logger,
 		closed: false,
+		dumper: dumper,
 	}
 
 	logger.Info("Created TUN device: ", t.name)
@@ -64,8 +67,7 @@ func (t *TUN) Read(packets [][]byte, sizes []int, offset int) (int, error) {
 		return 0, err
 	}
 
-	//data, _ := netutils.DumpPacket(packets[0][offset:offset+n], true)
-	//t.log.Debugf("Read packet from Netstack: %s\n", data)
+	t.dumpPacket(packets[0][offset : offset+n])
 
 	sizes[0] = n
 	return 1, nil
@@ -78,8 +80,7 @@ func (t *TUN) Write(packets [][]byte, offset int) (int, error) {
 		if len(p) == 0 {
 			continue
 		}
-		//data, _ := netutils.DumpPacket(p, true)
-		//t.log.Debugf("Writing packet to Netstack: %s\n", data)
+		t.dumpPacket(p)
 		t.ns.WritePacket(&p)
 	}
 	return len(packets), nil
@@ -114,4 +115,11 @@ func (t *TUN) Close() error {
 	t.ns.Close()
 	t.log.Info("Closed TUN device: ", t.name)
 	return nil
+}
+
+func (t *TUN) dumpPacket(packet []byte) {
+	if t.dumper == nil || len(packet) == 0 {
+		return
+	}
+	_ = t.dumper.Write(packet)
 }
